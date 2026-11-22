@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
-import { Tv, Plus, Trash2, Power, ExternalLink, Image as ImageIcon, Video, Upload, Lock, LogOut } from 'lucide-react'
+import { Tv, Plus, Trash2, Power, ExternalLink, Image as ImageIcon, Video, Upload, Lock, LogOut, Volume2, VolumeX } from 'lucide-react'
 
 const esVideo = (url) => {
   if (!url) return false
@@ -135,6 +135,8 @@ function PantallaTV({ clientId }) {
   const [cliente, setCliente] = useState(null)
   const [slides, setSlides] = useState([])
   const [indice, setIndice] = useState(0)
+  const [audioBloqueado, setAudioBloqueado] = useState(false)
+  const videoRef = useRef(null)
 
   const cargarDatos = async () => {
     const { data: c } = await supabase
@@ -173,13 +175,43 @@ function PantallaTV({ clientId }) {
   useEffect(() => {
     if (!slides.length || cliente?.estado_suscripcion !== 'activo') return
     const actual = slides[indice]
-    // Si es video, avanza al terminar el video (onEnded), no por temporizador fijo
     if (esVideo(actual?.url_imagen)) return
 
     const duracion = (actual?.duracion_segundos || 6) * 1000
     const timer = setTimeout(siguienteSlide, duracion)
     return () => clearTimeout(timer)
   }, [indice, slides, cliente])
+
+  // Manejo inteligente de audio y políticas de autoplay del navegador
+  useEffect(() => {
+    const vid = videoRef.current
+    if (!vid || !cliente) return
+
+    const quiereSonido = Boolean(cliente.sonido_activo)
+    vid.muted = !quiereSonido
+
+    vid.play()
+      .then(() => {
+        setAudioBloqueado(false)
+      })
+      .catch(() => {
+        // Si el navegador bloquea el autoplay con sonido, arranca en silencio y muestra aviso de desbloqueo
+        if (quiereSonido) {
+          vid.muted = true
+          vid.play().catch(() => {})
+          setAudioBloqueado(true)
+        }
+      })
+  }, [indice, slides, cliente?.sonido_activo])
+
+  const desbloquearAudio = () => {
+    const vid = videoRef.current
+    if (vid) {
+      vid.muted = false
+      vid.play().catch(() => {})
+    }
+    setAudioBloqueado(false)
+  }
 
   if (!cliente) {
     return (
@@ -216,13 +248,17 @@ function PantallaTV({ clientId }) {
   const actualEsVideo = esVideo(actual.url_imagen)
 
   return (
-    <div className="h-screen w-screen bg-black overflow-hidden relative select-none">
+    <div
+      onClick={audioBloqueado ? desbloquearAudio : undefined}
+      className="h-screen w-screen bg-black overflow-hidden relative select-none"
+    >
       {actualEsVideo ? (
         <video
+          ref={videoRef}
           key={actual.id}
           src={actual.url_imagen}
           autoPlay
-          muted
+          muted={!cliente.sonido_activo}
           playsInline
           loop={slides.length === 1}
           onEnded={siguienteSlide}
@@ -235,6 +271,15 @@ function PantallaTV({ clientId }) {
           alt={actual.titulo}
           className="w-full h-full object-cover transition-opacity duration-700"
         />
+      )}
+
+      {actualEsVideo && cliente.sonido_activo && audioBloqueado && (
+        <button
+          onClick={desbloquearAudio}
+          className="absolute top-6 left-6 bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium px-4 py-2 rounded-full shadow-lg flex items-center gap-2 cursor-pointer animate-pulse"
+        >
+          <Volume2 className="w-4 h-4" /> Presiona OK para activar sonido
+        </button>
       )}
 
       {actual.titulo && (
@@ -297,7 +342,7 @@ function PanelAdmin({ session }) {
   const crearNegocio = async (e) => {
     e.preventDefault()
     if (!nuevoNegocio.trim()) return
-    await supabase.from('clientes_pantalla').insert([{ nombre_negocio: nuevoNegocio }])
+    await supabase.from('clientes_pantalla').insert([{ nombre_negocio: nuevoNegocio, sonido_activo: false }])
     setNuevoNegocio('')
     cargarClientes()
   }
@@ -307,6 +352,15 @@ function PanelAdmin({ session }) {
     await supabase
       .from('clientes_pantalla')
       .update({ estado_suscripcion: nuevoEstado })
+      .eq('id', cliente.id)
+    cargarClientes()
+  }
+
+  const alternarSonido = async (cliente) => {
+    const nuevoSonido = !cliente.sonido_activo
+    await supabase
+      .from('clientes_pantalla')
+      .update({ sonido_activo: nuevoSonido })
       .eq('id', cliente.id)
     cargarClientes()
   }
@@ -423,15 +477,22 @@ function PanelAdmin({ session }) {
                 >
                   <div className="flex items-center justify-between">
                     <span className="font-medium text-sm">{c.nombre_negocio}</span>
-                    <span
-                      className={`text-xs px-2 py-0.5 rounded-full font-medium ${
-                        c.estado_suscripcion === 'activo'
-                          ? 'bg-emerald-500/20 text-emerald-400'
-                          : 'bg-red-500/20 text-red-400'
-                      }`}
-                    >
-                      {c.estado_suscripcion === 'activo' ? 'Activo' : 'Pausado'}
-                    </span>
+                    <div className="flex items-center gap-1.5">
+                      {c.sonido_activo ? (
+                        <Volume2 className="w-3.5 h-3.5 text-emerald-400" title="Sonido activado" />
+                      ) : (
+                        <VolumeX className="w-3.5 h-3.5 text-neutral-500" title="Silenciado" />
+                      )}
+                      <span
+                        className={`text-xs px-2 py-0.5 rounded-full font-medium ${
+                          c.estado_suscripcion === 'activo'
+                            ? 'bg-emerald-500/20 text-emerald-400'
+                            : 'bg-red-500/20 text-red-400'
+                        }`}
+                      >
+                        {c.estado_suscripcion === 'activo' ? 'Activo' : 'Pausado'}
+                      </span>
+                    </div>
                   </div>
                 </div>
               ))}
@@ -449,26 +510,45 @@ function PanelAdmin({ session }) {
                       URL del Televisor: <code className="text-emerald-400">{window.location.origin}/?tv={seleccionado.id}</code>
                     </p>
                   </div>
-                  <div className="flex items-center gap-3">
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <button
+                      onClick={() => alternarSonido(seleccionado)}
+                      className={`px-3.5 py-2 rounded-lg text-sm font-medium flex items-center gap-2 cursor-pointer border ${
+                        seleccionado.sonido_activo
+                          ? 'bg-emerald-600/20 text-emerald-400 border-emerald-500/40 hover:bg-emerald-600/30'
+                          : 'bg-neutral-800 text-neutral-300 border-neutral-700 hover:bg-neutral-700'
+                      }`}
+                    >
+                      {seleccionado.sonido_activo ? (
+                        <>
+                          <Volume2 className="w-4 h-4" /> Sonido: ON
+                        </>
+                      ) : (
+                        <>
+                          <VolumeX className="w-4 h-4" /> Sonido: OFF
+                        </>
+                      )}
+                    </button>
+
                     <button
                       onClick={() => alternarSuscripcion(seleccionado)}
-                      className={`px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 cursor-pointer ${
+                      className={`px-3.5 py-2 rounded-lg text-sm font-medium flex items-center gap-2 cursor-pointer ${
                         seleccionado.estado_suscripcion === 'activo'
                           ? 'bg-amber-600/20 text-amber-400 border border-amber-500/40 hover:bg-amber-600/30'
                           : 'bg-emerald-600 text-white hover:bg-emerald-500'
                       }`}
                     >
                       <Power className="w-4 h-4" />
-                      {seleccionado.estado_suscripcion === 'activo' ? 'Pausar por falta de pago' : 'Reactivar servicio'}
+                      {seleccionado.estado_suscripcion === 'activo' ? 'Pausar servicio' : 'Reactivar'}
                     </button>
 
                     <a
                       href={`/?tv=${seleccionado.id}`}
                       target="_blank"
                       rel="noreferrer"
-                      className="bg-neutral-800 hover:bg-neutral-700 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2"
+                      className="bg-neutral-800 hover:bg-neutral-700 text-white px-3.5 py-2 rounded-lg text-sm font-medium flex items-center gap-2"
                     >
-                      <ExternalLink className="w-4 h-4" /> Abrir Pantalla TV
+                      <ExternalLink className="w-4 h-4" /> Abrir TV
                     </a>
                   </div>
                 </div>
