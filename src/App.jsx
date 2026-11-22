@@ -1,17 +1,20 @@
 import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
-import { Tv, Plus, Trash2, Power, ExternalLink, Image as ImageIcon, Upload, Lock, LogOut } from 'lucide-react'
+import { Tv, Plus, Trash2, Power, ExternalLink, Image as ImageIcon, Video, Upload, Lock, LogOut } from 'lucide-react'
+
+const esVideo = (url) => {
+  if (!url) return false
+  return /\.(mp4|webm|ogg|mov)(\?.*)?$/i.test(url) || url.includes('/video/upload/')
+}
 
 export default function App() {
   const params = new URLSearchParams(window.location.search)
   const tvClientId = params.get('tv')
 
-  // 1. Si tiene ?tv=ID, es la pantalla pública del televisor (NO pide login)
   if (tvClientId) {
     return <PantallaTV clientId={tvClientId} />
   }
 
-  // 2. Si entra a la raíz, exige sesión de administrador
   return <ContenedorAdmin />
 }
 
@@ -163,12 +166,18 @@ function PantallaTV({ clientId }) {
     return () => supabase.removeChannel(canal)
   }, [clientId])
 
+  const siguienteSlide = () => {
+    setIndice((prev) => (prev + 1) % slides.length)
+  }
+
   useEffect(() => {
     if (!slides.length || cliente?.estado_suscripcion !== 'activo') return
-    const duracion = (slides[indice]?.duracion_segundos || 6) * 1000
-    const timer = setTimeout(() => {
-      setIndice((prev) => (prev + 1) % slides.length)
-    }, duracion)
+    const actual = slides[indice]
+    // Si es video, avanza al terminar el video (onEnded), no por temporizador fijo
+    if (esVideo(actual?.url_imagen)) return
+
+    const duracion = (actual?.duracion_segundos || 6) * 1000
+    const timer = setTimeout(siguienteSlide, duracion)
     return () => clearTimeout(timer)
   }, [indice, slides, cliente])
 
@@ -204,15 +213,30 @@ function PantallaTV({ clientId }) {
   }
 
   const actual = slides[indice]
+  const actualEsVideo = esVideo(actual.url_imagen)
 
   return (
     <div className="h-screen w-screen bg-black overflow-hidden relative select-none">
-      <img
-        key={actual.id}
-        src={actual.url_imagen}
-        alt={actual.titulo}
-        className="w-full h-full object-cover transition-opacity duration-700"
-      />
+      {actualEsVideo ? (
+        <video
+          key={actual.id}
+          src={actual.url_imagen}
+          autoPlay
+          muted
+          playsInline
+          loop={slides.length === 1}
+          onEnded={siguienteSlide}
+          className="w-full h-full object-cover"
+        />
+      ) : (
+        <img
+          key={actual.id}
+          src={actual.url_imagen}
+          alt={actual.titulo}
+          className="w-full h-full object-cover transition-opacity duration-700"
+        />
+      )}
+
       {actual.titulo && (
         <div className="absolute bottom-8 left-8 bg-black/70 backdrop-blur-md text-white px-6 py-3 rounded-xl border border-white/10">
           <p className="text-2xl font-bold tracking-wide">{actual.titulo}</p>
@@ -287,7 +311,7 @@ function PanelAdmin({ session }) {
     cargarClientes()
   }
 
-  const subirImagenCloudinary = async (e) => {
+  const subirArchivoCloudinary = async (e) => {
     const archivo = e.target.files?.[0]
     if (!archivo) return
 
@@ -306,7 +330,7 @@ function PanelAdmin({ session }) {
 
     try {
       const res = await fetch(
-        `https://api.cloudinary.com/v1_1/${cloudName}/image/upload`,
+        `https://api.cloudinary.com/v1_1/${cloudName}/auto/upload`,
         { method: 'POST', body: formData }
       )
       const data = await res.json()
@@ -314,7 +338,7 @@ function PanelAdmin({ session }) {
         const urlOptimizada = data.secure_url.replace('/upload/', '/upload/f_auto,q_auto/')
         setNuevaUrl(urlOptimizada)
       } else {
-        alert('Error al subir imagen: ' + (data.error?.message || 'Revisa tu Upload Preset'))
+        alert('Error al subir archivo: ' + (data.error?.message || 'Revisa tu Upload Preset'))
       }
     } catch (err) {
       console.error('Error subiendo a Cloudinary:', err)
@@ -449,7 +473,7 @@ function PanelAdmin({ session }) {
                   </div>
                 </div>
 
-                {/* Formulario agregar diapositiva */}
+                {/* Formulario agregar imagen o video */}
                 <form
                   onSubmit={agregarSlide}
                   className="space-y-3 mb-6 bg-neutral-950 p-4 rounded-xl border border-neutral-800"
@@ -466,7 +490,7 @@ function PanelAdmin({ session }) {
                       <input
                         type="url"
                         required
-                        placeholder="Sube un archivo o pega URL (https://...)"
+                        placeholder="Sube imagen/video o pega URL..."
                         value={nuevaUrl}
                         onChange={(e) => setNuevaUrl(e.target.value)}
                         className="flex-1 bg-neutral-900 border border-neutral-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-emerald-500"
@@ -476,8 +500,8 @@ function PanelAdmin({ session }) {
                         <span>{subiendo ? 'Subiendo...' : 'Subir'}</span>
                         <input
                           type="file"
-                          accept="image/*"
-                          onChange={subirImagenCloudinary}
+                          accept="image/*,video/mp4,video/webm"
+                          onChange={subirArchivoCloudinary}
                           disabled={subiendo}
                           className="hidden"
                         />
@@ -487,7 +511,7 @@ function PanelAdmin({ session }) {
 
                   <div className="flex items-center justify-between pt-1">
                     <div className="flex items-center gap-2 text-xs text-neutral-400">
-                      <span>Duración en pantalla:</span>
+                      <span>Duración (solo imágenes):</span>
                       <input
                         type="number"
                         min="2"
@@ -508,16 +532,28 @@ function PanelAdmin({ session }) {
                   </div>
                 </form>
 
-                {/* Lista de diapositivas */}
+                {/* Lista de diapositivas y videos */}
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   {slides.map((s) => (
                     <div key={s.id} className="bg-neutral-950 border border-neutral-800 rounded-xl overflow-hidden flex flex-col">
-                      <img src={s.url_imagen} alt={s.titulo} className="h-36 w-full object-cover" />
+                      {esVideo(s.url_imagen) ? (
+                        <video src={s.url_imagen} muted loop autoPlay playsInline className="h-36 w-full object-cover" />
+                      ) : (
+                        <img src={s.url_imagen} alt={s.titulo} className="h-36 w-full object-cover" />
+                      )}
                       <div className="p-3 flex items-center justify-between">
                         <div>
                           <p className="font-medium text-sm">{s.titulo || 'Sin título'}</p>
                           <p className="text-xs text-neutral-400 flex items-center gap-1 mt-0.5">
-                            <ImageIcon className="w-3 h-3" /> {s.duracion_segundos} seg.
+                            {esVideo(s.url_imagen) ? (
+                              <>
+                                <Video className="w-3 h-3 text-emerald-400" /> Video MP4 (auto)
+                              </>
+                            ) : (
+                              <>
+                                <ImageIcon className="w-3 h-3" /> {s.duracion_segundos} seg.
+                              </>
+                            )}
                           </p>
                         </div>
                         <button
